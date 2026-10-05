@@ -1,0 +1,9 @@
+Dataset_Final/
+features/*.npy
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+features/audio_cache/
+logs/
+features/*_cache/
+submission*.csv
