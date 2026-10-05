@@ -1,6 +1,6 @@
 # Kaggle notebook cell: 5-fold end-to-end fine-tune of WavLM on raw audio -> grammar score.
 # Settings: Accelerator = GPU T4 x2, Internet = On.
-# Inputs: the competition data + the shl-transcripts dataset (for the noise mask / row order).
+# Input: the competition data only.
 # Outputs (in /kaggle/working): ft_wavlm-ft_oof.npy, ft_wavlm-ft_test.npy
 import glob
 import os
@@ -34,9 +34,9 @@ class Regressor(torch.nn.Module):
 
 find = lambda name: glob.glob(f"/kaggle/input/**/{name}", recursive=True)[0]
 root = os.path.dirname(find("train.csv"))
-pros = pd.read_csv(find("prosody.csv"))  # rows: train.csv order, then test.csv order
-noise = ((pros.voiced_ratio > 0.95) & (pros.zcr > 0.4)).values
-trn, tst = (pros.split == "train").values & ~noise, (pros.split == "test").values
+meta = pd.concat([pd.read_csv(os.path.join(root, "train.csv")).assign(split="train"),
+                  pd.read_csv(os.path.join(root, "test.csv")).assign(split="test")], ignore_index=True)
+meta["key"] = meta.split + "/" + meta.filename
 
 
 def load(key):
@@ -48,9 +48,14 @@ def load(key):
     return (y - y.mean()) / (y.std() + 1e-7)
 
 
-wav_tr = [load(k) for k in pros.key[trn]]
-wav_te = [load(k) for k in pros.key[tst]]
-y = pros.label[trn].values
+wavs = [load(k) for k in meta.key]
+zcr = np.array([np.mean(np.diff(np.signbit(w)) != 0) for w in wavs])
+noise = zcr > 0.4  # white-noise clips (all labelled 0); speech stays far below
+trn, tst = (meta.split == "train").values & ~noise, (meta.split == "test").values
+wav_tr = [w for w, m in zip(wavs, trn) if m]
+wav_te = [w for w, m in zip(wavs, tst) if m]
+y = meta.label[trn].values
+print("noise clips", noise[meta.split == "train"].sum(), noise[tst].sum(), flush=True)
 print("loaded", len(wav_tr), len(wav_te), flush=True)
 
 
