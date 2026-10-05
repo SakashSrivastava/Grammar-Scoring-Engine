@@ -22,7 +22,8 @@ def load():
     tab = pd.concat([pros.drop(columns=meta.columns), txt.drop(columns=meta.columns)], axis=1).values
     wav = np.load(FEAT / "wavlm.npy")
     blocks = {"tab": tab, "sbert": np.load(FEAT / "sbert.npy"), "wavlm": wav[:, 7:10].mean(1),
-              "whisper": np.load(FEAT / "whisper-large-v3-turbo_enc.npy")[:, 7:].mean(1)}  # encoder layers 28-32
+              "whisper": np.load(FEAT / "whisper-large-v3-turbo_enc.npy")[:, 7:].mean(1),  # encoder layers 28-32
+              "qwen": np.load(FEAT / "llm_Qwen2.5-1.5B.npy")[:, 3:5].mean(1)}  # LLM layers 16-19
     noise = ((pros.voiced_ratio > 0.95) & (pros.zcr > 0.4)).values  # white-noise clips, labelled 0
     return meta, blocks, noise
 
@@ -41,6 +42,8 @@ def models():
         "wavlm_ridge": ("wavlm", ridge()),
         "whisper_svr": ("whisper", svr()),
         "whisper_ridge": ("whisper", ridge()),
+        "qwen_svr": ("qwen", svr()),
+        "qwen_ridge": ("qwen", make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(1, 6, 30)))),
     }
 
 
