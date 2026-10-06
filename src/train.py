@@ -1,4 +1,5 @@
-"""5-fold CV over feature blocks, then a non-negative linear stack of the block models."""
+"""Base models with repeated 5-fold CV on cached features, then a length-aware non-negative linear stack
+(separate weights for ~45 s and ~60 s clips) over the out-of-fold predictions. Writes submission.csv."""
 import numpy as np
 import pandas as pd
 from scipy.optimize import nnls
@@ -34,7 +35,7 @@ def load():
             blocks[f"t45_{name}"] = np.load(FEAT / f"t45_{name}.npy")
     if (FEAT / "llm_judge.npy").exists():  # zero-shot LLM rubric score: p(1..5) + expected value
         blocks["judge"] = np.load(FEAT / "llm_judge.npy")
-    noise = ((pros.voiced_ratio > 0.95) & (pros.zcr > 0.4)).values  # white-noise clips, labelled 0
+    noise = (pros.zcr > 0.4).values  # white-noise clips, all labelled 0 (speech stays below 0.34)
     short = (pros.dur < 50).values  # ~45 s clips: 24% of train but 69% of test
     return meta, blocks, noise, short
 
@@ -97,18 +98,14 @@ def stack_by_length(O, y, short, T=None, short_te=None):
     return oof, pred, ws
 
 
-def nested_stack_cv(O, y, short):
+def nested_stack_cv(O, y, short, by_length=True):
     """Honest stack estimate: weights fitted on 4/5 of the OOF rows, scored on the held-out 1/5."""
     out = np.zeros(len(y))
     for a, b in StratifiedKFold(5, shuffle=True, random_state=99).split(O, (y * 2).astype(int)):
-        _, out[b], _ = stack_by_length(O[a], y[a], short[a], O[b], short[b])
-    return np.clip(out, 1, 5)
-
-
-def nested_single(O, y):
-    out = np.zeros(len(y))
-    for a, b in StratifiedKFold(5, shuffle=True, random_state=99).split(O, (y * 2).astype(int)):
-        out[b] = apply_stack(O[b], fit_stack(O[a], y[a]))
+        if by_length:
+            _, out[b], _ = stack_by_length(O[a], y[a], short[a], O[b], short[b])
+        else:
+            out[b] = apply_stack(O[b], fit_stack(O[a], y[a]))
     return np.clip(out, 1, 5)
 
 
@@ -129,18 +126,15 @@ def main():
             continue
         X = blocks[b]
         oofs[name], tes[name] = cv(X[trn], y, X[tst], est)
-        print(f"{name:12s} RMSE {score(y, oofs[name])[0]:.4f}  r {score(y, oofs[name])[1]:.4f}")
-    for f in sorted(FEAT.glob("ft_*_oof.npy")):  # fine-tuned transformer predictions (finetune_text.py)
+    for f in sorted(FEAT.glob("ft_*_oof.npy")):  # fine-tuned transformers (finetune_text.py, kaggle/*.py)
         name = f.stem[3:-4]
         oofs[name], tes[name] = np.load(f), np.load(str(f).replace("_oof", "_test"))
-        print(f"{name:12s} RMSE {score(y, oofs[name])[0]:.4f}  r {score(y, oofs[name])[1]:.4f}")
     names = [n for n in STACK if n in oofs]
     O, T = np.column_stack([oofs[n] for n in names]), np.column_stack([tes[n] for n in names])
     short, short_te = short_all[trn], short_all[tst]
     for n in oofs:
         report(n, y, oofs[n], short)
-    w1 = fit_stack(O, y)
-    report("stack (single, nested)", y, nested_single(O, y), short)
+    report("stack (single, nested)", y, nested_stack_cv(O, y, short, by_length=False), short)
     report("stack (by length, nested)", y, nested_stack_cv(O, y, short), short)
     oof, pred, ws = stack_by_length(O, y, short, T, short_te)
     for g, w in ws.items():
