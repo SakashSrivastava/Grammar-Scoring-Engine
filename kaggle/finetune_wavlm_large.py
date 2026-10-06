@@ -4,6 +4,7 @@
 # Outputs (in /kaggle/working): ft_wavlm-large-ft_oof.npy, ft_wavlm-large-ft_test.npy
 import glob
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -13,6 +14,7 @@ from transformers import WavLMModel, get_cosine_schedule_with_warmup
 
 MODEL = "microsoft/wavlm-large"
 SEED, EPOCHS, BS, CROP, SR = 42, 10, 8, 10, 16000
+MICRO = 4  # clips per forward pass; gradients are accumulated over BS // MICRO passes (fits a 15 GB T4)
 LR_ENC, LR_HEAD = 2e-5, 1e-3
 MEAN, STD = 3.5, 1.0
 
@@ -77,6 +79,7 @@ def predict(model, wavs):
         x = torch.tensor(np.stack(chunks)).cuda()
         with torch.autocast("cuda", dtype=torch.float16):
             out.append(model(x).float().mean().item())
+        del x
     return np.array(out) * STD + MEAN
 
 
@@ -97,12 +100,14 @@ for k, (a, b) in enumerate(StratifiedKFold(5, shuffle=True, random_state=SEED).s
         perm = rng.permutation(a)
         for i in range(0, len(perm) - BS + 1, BS):
             idx = perm[i:i + BS]
-            x = torch.tensor(np.stack([crop(wav_tr[j], rng) for j in idx])).cuda()
-            t = torch.tensor(tgt[idx], dtype=torch.float32).cuda()
-            with torch.autocast("cuda", dtype=torch.float16):
-                pred = model(x).float()
-            loss = torch.nn.functional.mse_loss(pred, t)
-            scaler.scale(loss).backward()
+            for m in range(0, BS, MICRO):
+                sub = idx[m:m + MICRO]
+                x = torch.tensor(np.stack([crop(wav_tr[j], rng) for j in sub])).cuda()
+                t = torch.tensor(tgt[sub], dtype=torch.float32).cuda()
+                with torch.autocast("cuda", dtype=torch.float16):
+                    pred = model(x).float()
+                loss = torch.nn.functional.mse_loss(pred, t) * len(sub) / BS
+                scaler.scale(loss).backward()
             scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt), scaler.update(), sch.step(), opt.zero_grad()
