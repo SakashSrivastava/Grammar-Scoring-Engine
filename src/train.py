@@ -13,6 +13,9 @@ from lightgbm import LGBMRegressor
 from common import FEAT, ROOT
 
 SEEDS = [0, 1, 2]
+# Stack inputs chosen by repeated nested CV: two audio + two text models beat using all 18 base models
+# (test-mix RMSE 0.477 vs 0.486) because the short-clip weights are fitted on only 178 clips.
+STACK = ["wavlm-ft", "wavlm_large_svr", "deberta-v3-large", "deberta-v3-base"]
 
 
 def load():
@@ -26,6 +29,11 @@ def load():
               "qwen": np.load(FEAT / "llm_Qwen2.5-1.5B.npy")[:, 3:5].mean(1)}  # LLM layers 16-19
     wl = np.load(FEAT / "ssl_wavlm-large.npy")
     blocks["wavlm_large"] = wl[:, 20:22, : wl.shape[-1] // 2].mean(1)  # layers 20-21, time-mean part
+    for name in ("wavlm-large", "whisper"):  # same encoders on clips cut to their first 45 s (trunc_feats.py)
+        if (FEAT / f"t45_{name}.npy").exists():
+            blocks[f"t45_{name}"] = np.load(FEAT / f"t45_{name}.npy")
+    if (FEAT / "llm_judge.npy").exists():  # zero-shot LLM rubric score: p(1..5) + expected value
+        blocks["judge"] = np.load(FEAT / "llm_judge.npy")
     noise = ((pros.voiced_ratio > 0.95) & (pros.zcr > 0.4)).values  # white-noise clips, labelled 0
     short = (pros.dur < 50).values  # ~45 s clips: 24% of train but 69% of test
     return meta, blocks, noise, short
@@ -47,6 +55,9 @@ def models():
         "whisper_ridge": ("whisper", ridge()),
         "wavlm_large_svr": ("wavlm_large", svr()),
         "wavlm_large_ridge": ("wavlm_large", ridge()),
+        "t45_wavlm_svr": ("t45_wavlm-large", svr()),
+        "t45_whisper_svr": ("t45_whisper", svr()),
+        "judge_ridge": ("judge", ridge()),
         "qwen_svr": ("qwen", svr()),
         "qwen_ridge": ("qwen", make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(1, 6, 30)))),
     }
@@ -114,6 +125,8 @@ def main():
     y = meta.label[trn].values
     oofs, tes = {}, {}
     for name, (b, est) in models().items():
+        if b not in blocks:
+            continue
         X = blocks[b]
         oofs[name], tes[name] = cv(X[trn], y, X[tst], est)
         print(f"{name:12s} RMSE {score(y, oofs[name])[0]:.4f}  r {score(y, oofs[name])[1]:.4f}")
@@ -121,10 +134,10 @@ def main():
         name = f.stem[3:-4]
         oofs[name], tes[name] = np.load(f), np.load(str(f).replace("_oof", "_test"))
         print(f"{name:12s} RMSE {score(y, oofs[name])[0]:.4f}  r {score(y, oofs[name])[1]:.4f}")
-    names = list(oofs)
+    names = [n for n in STACK if n in oofs]
     O, T = np.column_stack([oofs[n] for n in names]), np.column_stack([tes[n] for n in names])
     short, short_te = short_all[trn], short_all[tst]
-    for n in names:
+    for n in oofs:
         report(n, y, oofs[n], short)
     w1 = fit_stack(O, y)
     report("stack (single, nested)", y, nested_single(O, y), short)
