@@ -40,7 +40,7 @@ Key findings:
 | v10 | + end-to-end fine-tuned WavLM-base+ | 0.481 | 0.3401 |
 | v13 | stack pruned to 4 inputs | 0.477 | 0.3351 |
 
-Tested without gain: hand-crafted prosody/transcript features, sentence and LLM (Qwen2.5-1.5B) embeddings, a zero-shot LLM grammar judge, mean+std pooling, truncating training clips to 45 s.
+Tested without gain: hand-crafted prosody/transcript features, sentence and LLM (Qwen2.5-1.5B) embeddings, a zero-shot LLM grammar judge, mean+std pooling, truncating training clips to 45 s, fine-tuning WavLM-large (10 epochs on a T4 was not enough to beat the base model).
 
 ## Layout
 
